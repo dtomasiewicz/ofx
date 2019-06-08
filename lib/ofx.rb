@@ -16,6 +16,7 @@ require "ofx/sign_on"
 require "ofx/status"
 require "ofx/statement"
 require "ofx/transaction"
+require "ofx/inv_transaction"
 require "ofx/version"
 
 def OFX(resource, &block)

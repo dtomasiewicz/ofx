@@ -32,16 +32,16 @@ module OFX
       end
 
       def statements
-        @statements ||= html.search("stmttrnrs, ccstmttrnrs").collect { |node| build_statement(node) }
+        @statements ||= html.search("stmttrnrs, ccstmttrnrs, invstmttrnrs").collect { |node| build_statement(node) }
       end
 
       def accounts
-        @accounts ||= html.search("stmttrnrs, ccstmttrnrs").collect { |node| build_account(node) }
+        @accounts ||= html.search("stmttrnrs, ccstmttrnrs, invstmttrnrs").collect { |node| build_account(node) }
       end
 
       # DEPRECATED: kept for legacy support
       def account
-        @account ||= build_account(html.search("stmttrnrs, ccstmttrnrs").first)
+        @account ||= build_account(html.search("stmttrnrs, ccstmttrnrs, invstmttrnrs").first)
       end
 
       def sign_on
@@ -69,28 +69,26 @@ module OFX
       private
 
       def build_statement(node)
-        stmrs_node = node.search("stmtrs, ccstmtrs")
+        stmrs_node = node.search("stmtrs, ccstmtrs, invstmtrs")
         account = build_account(node)
         OFX::Statement.new(
           :currency          => stmrs_node.search("curdef").inner_text,
-          :start_date        => build_date(stmrs_node.search("banktranlist > dtstart").inner_text),
-          :end_date          => build_date(stmrs_node.search("banktranlist > dtend").inner_text),
+          :start_date        => build_date(stmrs_node.search("banktranlist > dtstart, invtranlist > dtstart").inner_text),
+          :end_date          => build_date(stmrs_node.search("banktranlist > dtend, invtranlist > dtstart").inner_text),
           :account           => account,
-          :transactions      => account.transactions,
-          :balance           => account.balance,
-          :available_balance => account.available_balance
         )
       end
 
       def build_account(node)
         OFX::Account.new({
           :bank_id           => node.search("bankacctfrom > bankid").inner_text,
-          :id                => node.search("bankacctfrom > acctid, ccacctfrom > acctid").inner_text,
+          :id                => node.search("bankacctfrom > acctid, ccacctfrom > acctid, invacctfrom > acctid").inner_text,
           :type              => ACCOUNT_TYPES[node.search("bankacctfrom > accttype").inner_text.to_s.upcase],
           :transactions      => build_transactions(node),
+          :inv_transactions  => build_invtransactions(node),
           :balance           => build_balance(node),
           :available_balance => build_available_balance(node),
-          :currency          => node.search("stmtrs > curdef, ccstmtrs > curdef").inner_text
+          :currency          => node.search("stmtrs > curdef, ccstmtrs > curdef, invstmtrs > curdef").inner_text
         })
       end
 
@@ -112,8 +110,27 @@ module OFX
       end
 
       def build_transactions(node)
-        node.search("banktranlist > stmttrn").collect do |element|
+        node.search("banktranlist > stmttrn, invtranlist > invbanktran > stmttrn").collect do |element|
           build_transaction(element)
+        end
+      end
+
+      def build_invtransactions(node)
+        types = %w[
+          buydebt buymf buyopt buyother buystock
+          closureopt
+          income
+          invexpense
+          jrnlfund jrnlsec
+          margininterest
+          reinvest
+          retofcap
+          selldebt sellmf sellopt sellstock
+          split
+          transfer
+        ]
+        node.search(types.map{|t| "invtranlist > #{t}"}.join ', ').collect do |element|
+          build_invtransaction(element)
         end
       end
 
@@ -134,6 +151,24 @@ module OFX
           :type              => build_type(element),
           :sic               => element.search("sic").inner_text
         })
+      end
+
+      def build_invtransaction(element)
+        OFX::InvTransaction.new({
+          :type        => element.name,
+          :fit_id      => element.search("invtran > fitid").inner_text,
+          :memo        => element.search("invtran > memo").inner_text,
+          :traded_at   => build_date(element.search("invtran > dttrade").inner_text),
+          :settled_at  => build_date(element.search("invtran > dtsettle").inner_text),
+          :cusip_secid => element.search("secid > uniqueid").inner_text,
+          :units       => opt(element.search('units').inner_text){|u| to_decimal u},
+          :total       => opt(element.search('total').inner_text){|t| to_decimal t},
+          :inv_401k_source => opt(element.search('inv401ksource').inner_text),
+        })
+      end
+
+      def opt(v, &block)
+        v && v != "" ? (block ? block.call(v) : v) : nil
       end
 
       def build_type(element)
@@ -166,14 +201,18 @@ module OFX
       end
 
       def build_balance(node)
-        amount = to_decimal(node.search("ledgerbal > balamt").inner_text)
-        posted_at = build_date(node.search("ledgerbal > dtasof").inner_text) rescue nil
+        if node.search("ledgerbal").size > 0
+          amount = to_decimal(node.search("ledgerbal > balamt").inner_text)
+          posted_at = build_date(node.search("ledgerbal > dtasof").inner_text) rescue nil
 
-        OFX::Balance.new({
-          :amount => amount,
-          :amount_in_pennies => (amount * 100).to_i,
-          :posted_at => posted_at
-        })
+          OFX::Balance.new({
+            :amount => amount,
+            :amount_in_pennies => (amount * 100).to_i,
+            :posted_at => posted_at
+          })
+        else
+          nil
+        end
       end
 
       def build_available_balance(node)

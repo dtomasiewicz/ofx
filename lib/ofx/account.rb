@@ -5,6 +5,7 @@ module OFX
     attr_accessor :currency
     attr_accessor :id
     attr_accessor :transactions
+    attr_accessor :inv_transactions
     attr_accessor :type
     attr_accessor :available_balance
   end
